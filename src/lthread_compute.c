@@ -151,7 +151,7 @@ _lthread_compute_sched_free(struct lthread_compute_sched *compute_sched)
     assert(pthread_mutex_destroy(&compute_sched->run_mutex) == 0);
     assert(pthread_mutex_destroy(&compute_sched->lthreads_mutex) == 0);
     assert(pthread_cond_destroy(&compute_sched->run_mutex_cond) == 0);
-    free(compute_sched);
+    lthr_free(compute_sched);
 }
 
 static struct lthread_compute_sched*
@@ -160,14 +160,14 @@ _lthread_compute_sched_create(void)
     struct lthread_compute_sched *compute_sched = NULL;
     pthread_t pthread;
 
-    if ((compute_sched = calloc(1,
+    if ((compute_sched = lthr_calloc(1,
         sizeof(struct lthread_compute_sched))) == NULL)
         return NULL;
 
     if (pthread_mutex_init(&compute_sched->run_mutex, NULL) != 0 ||
         pthread_mutex_init(&compute_sched->lthreads_mutex, NULL) != 0 ||
         pthread_cond_init(&compute_sched->run_mutex_cond, NULL) != 0) {
-        free(compute_sched);
+        lthr_free(compute_sched);
         return NULL;
     }
 

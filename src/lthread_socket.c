@@ -212,7 +212,13 @@ lthread_close(int fd)
         lt->state |= BIT(LT_ST_FDEOF);
     }
 
-    /* closing fd removes its registered events from poller */ 
+    /* clear the eof bit of the calling lthread */
+    lt = lthread_get_sched()->current_lthread;
+    if (lt->state & BIT(LT_ST_FDEOF)) {
+        lt->state &= CLEARBIT(LT_ST_FDEOF);
+    }
+
+    /* closing fd removes its registered events from poller */
     return (close(fd));
 }
 
@@ -258,7 +264,7 @@ lthread_readline(int fd, char **buf, size_t max, uint64_t timeout)
     size_t total_read = 0;
     char *data = NULL;
 
-    data = calloc(1, max + 1);
+    data = lthr_calloc(1, max + 1);
     if (data == NULL)
         return (-1);
 
@@ -266,7 +272,7 @@ lthread_readline(int fd, char **buf, size_t max, uint64_t timeout)
         r = lthread_recv(fd, data + total_read, 1, 0, timeout);
 
         if (r == 0 || r == -2 || r == -1) {
-            free(data);
+            lthr_free(data);
             return (r);
         }
 
@@ -280,6 +286,7 @@ lthread_readline(int fd, char **buf, size_t max, uint64_t timeout)
     return (total_read);
 }
 
+/* http://stackoverflow.com/questions/19667243/c-pipe-without-using-popen */
 int
 lthread_pipe(int fildes[2])
 {
@@ -377,13 +384,14 @@ lthread_connect(int fd, struct sockaddr *name, socklen_t namelen,
         ret = connect(fd, name, namelen);
         if (ret == 0)
             break;
-        if (ret == -1 && (errno == EAGAIN || 
+        if (ret == -1 && (errno == EAGAIN ||
             errno == EWOULDBLOCK ||
-            errno == EINPROGRESS)) {
+            errno == EINPROGRESS ||
+            errno == EALREADY)) {
             _lthread_sched_event(lt, fd, LT_EV_WRITE, timeout);
             if (lt->state & BIT(LT_ST_EXPIRED))
                 return (-2);
-            
+
             continue;
         } else {
             break;

@@ -35,17 +35,22 @@
 #include <netinet/in.h>
 #include <stdint.h>
 #include <poll.h>
+#include "settings.h"
 
 #define DEFINE_LTHREAD (lthread_set_funcname(__func__))
+#define LTHREAD_FOREVER ((uint64_t)0x01FFFFFF)
 
 #ifndef LTHREAD_INT_H
 struct lthread;
 struct lthread_cond;
+struct lthread_mutex;
 typedef struct lthread lthread_t;
 typedef struct lthread_cond lthread_cond_t;
+typedef struct lthread_mutex lthread_mutex_t;
 #endif
+#include "chan.h"
 
-char    *lthread_summary();
+char    *lthread_summary(void);
 
 typedef void (*lthread_func)(void *);
 #ifdef __cplusplus
@@ -65,10 +70,14 @@ int     lthread_cond_create(lthread_cond_t **c);
 int     lthread_cond_wait(lthread_cond_t *c, uint64_t timeout);
 void    lthread_cond_signal(lthread_cond_t *c);
 void    lthread_cond_broadcast(lthread_cond_t *c);
+int     lthread_mutex_create(lthread_mutex_t **m);
+int     lthread_mutex_check(lthread_mutex_t *m);
+void    lthread_mutex_lock(lthread_mutex_t *m);
+void    lthread_mutex_unlock(lthread_mutex_t *m);
 int     lthread_init(size_t size);
 void    *lthread_get_data(void);
 void    lthread_set_data(void *data);
-lthread_t *lthread_current();
+lthread_t *lthread_current(void);
 
 /* socket related functions */
 int     lthread_socket(int, int, int);
@@ -76,7 +85,7 @@ int     lthread_pipe(int fildes[2]);
 int     lthread_accept(int fd, struct sockaddr *, socklen_t *);
 int     lthread_close(int fd);
 void    lthread_set_funcname(const char *f);
-uint64_t lthread_id();
+uint64_t lthread_id(void);
 struct lthread* lthread_self(void);
 int     lthread_connect(int fd, struct sockaddr *, socklen_t, uint64_t timeout);
 ssize_t lthread_recv(int fd, void *buf, size_t buf_len, int flags,

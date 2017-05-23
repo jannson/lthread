@@ -36,9 +36,12 @@
 #include <pthread.h>
 #include <time.h>
 
+#include "settings.h"
 #include "lthread_poller.h"
 #include "queue.h"
 #include "tree.h"
+#include "fifo.h"
+#include "chan.h"
 
 #define LT_MAX_EVENTS    (1024)
 #define MAX_STACK_SIZE (128*1024) /* 128k */
@@ -51,9 +54,14 @@ struct lthread_sched;
 struct lthread_compute_sched;
 struct lthread_io_sched;
 struct lthread_cond;
+struct lthread_mutex;
+struct lthread_chan;
+struct chan_wait;
+struct lthread_sel;
 
 LIST_HEAD(lthread_l, lthread);
 TAILQ_HEAD(lthread_q, lthread);
+TAILQ_HEAD(chan_q, chan_wait);
 
 typedef void (*lthread_func)(void *);
 
@@ -149,6 +157,38 @@ struct lthread_cond {
     struct lthread_q blocked_lthreads;
 };
 
+struct lthread_mutex {
+    struct lthread_cond c;
+    int locked;
+    uint64_t lthread;
+};
+
+struct lthread_chan {
+    queue_t*            queue;
+    int                 closed;
+    int                 send_count;
+    struct chan_q       sendq;
+    int                 recv_count;
+    struct chan_q       recvq;
+};
+
+struct chan_wait {
+    TAILQ_ENTRY(chan_wait) entry;
+    struct lthread_sel *sel;
+    int idx;
+};
+
+#define LTHR_SEL_CHANS 8
+struct lthread_sel {
+    struct chan_wait        waits[LTHR_SEL_CHANS];
+    struct lthread_cond     cond;
+    struct lthread_chan**   chans;
+    void**                  msgs;
+    int                     wchan_count;
+    int                     rchan_count;
+    int                     target;
+};
+
 struct lthread_sched {
     uint64_t            birth;
     struct cpu_ctx      ctx;
@@ -202,13 +242,13 @@ void        _lthread_sched_event(struct lthread *lt, int fd,
 int         _switch(struct cpu_ctx *new_ctx, struct cpu_ctx *cur_ctx);
 int         _save_exec_state(struct lthread *lt);
 void        _lthread_compute_add(struct lthread *lt);
-void         _lthread_io_worker_init();
+void         _lthread_io_worker_init(void);
 
 extern pthread_key_t lthread_sched_key;
 void print_timestamp(char *);
 
 static inline struct lthread_sched*
-lthread_get_sched()
+lthread_get_sched(void)
 {
     return pthread_getspecific(lthread_sched_key);
 }
@@ -224,7 +264,7 @@ _lthread_usec_now(void)
 {
     struct timeval t1 = {0, 0};
     gettimeofday(&t1, NULL);
-    return (t1.tv_sec * 1000000) + t1.tv_usec;
+    return ((uint64_t)t1.tv_sec * 1000000u) + t1.tv_usec;
 }
 
 #endif

@@ -29,6 +29,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdint.h>
 #include <limits.h>
@@ -37,14 +38,19 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <time.h>
 #include <sys/time.h>
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <malloc.h>
+#include <errno.h>
 
+#include "settings.h"
 #include "lthread_int.h"
 #include "lthread_poller.h"
 
-extern int errno;
-
+uint64_t lthread_id(void);
 static void _exec(void *lt);
 static void _lthread_init(struct lthread *lt);
 static void _lthread_key_create(void);
@@ -135,8 +141,8 @@ _lthread_yield(struct lthread *lt)
 void
 _lthread_free(struct lthread *lt)
 {
-    free(lt->stack);
-    free(lt);
+    lthr_free(lt->stack);
+    lthr_free(lt);
 }
 
 int
@@ -198,7 +204,7 @@ _lthread_madvise(struct lthread *lt)
     /* make sure function did not overflow stack, we can't recover from that */
     assert(current_stack <= lt->stack_size);
 
-    /* 
+    /*
      * free up stack space we no longer use. As long as we were using more than
      * pagesize bytes.
      */
@@ -215,7 +221,7 @@ _lthread_madvise(struct lthread *lt)
 static void
 _lthread_key_destructor(void *data)
 {
-    free(data);
+    lthr_free(data);
 }
 
 static void
@@ -258,7 +264,7 @@ _sched_free(struct lthread_sched *sched)
 #endif
     pthread_mutex_destroy(&sched->defer_mutex);
 
-    free(sched);
+    lthr_free(sched);
     pthread_setspecific(lthread_sched_key, NULL);
 }
 
@@ -270,7 +276,7 @@ sched_create(size_t stack_size)
 
     sched_stack_size = stack_size ? stack_size : MAX_STACK_SIZE;
 
-    if ((new_sched = calloc(1, sizeof(struct lthread_sched))) == NULL) {
+    if ((new_sched = lthr_calloc(1, sizeof(struct lthread_sched))) == NULL) {
         perror("Failed to initialize scheduler\n");
         return (errno);
     }
@@ -329,8 +335,8 @@ lthread_create(struct lthread **new_lt, void *fun, void *arg)
         return (errno);
     }
 
-    if (posix_memalign(&lt->stack, getpagesize(), sched->stack_size)) {
-        free(lt);
+    if (lthr_posix_memalign(&lt->stack, getpagesize(), sched->stack_size)) {
+        lthr_free(lt);
         perror("Failed to allocate stack for new lthread");
         return (errno);
     }
@@ -391,13 +397,18 @@ lthread_cancel(struct lthread *lt)
     TAILQ_INSERT_TAIL(&lt->sched->ready, lt, ready_next);
 }
 
+static inline void lthread_cond_init(struct lthread_cond *c)
+{
+    TAILQ_INIT(&c->blocked_lthreads);
+}
+
 int
 lthread_cond_create(struct lthread_cond **c)
 {
-    if ((*c = calloc(1, sizeof(struct lthread_cond))) == NULL)
+    if ((*c = lthr_calloc(1, sizeof(struct lthread_cond))) == NULL)
         return (-1);
 
-    TAILQ_INIT(&(*c)->blocked_lthreads);
+    lthread_cond_init(*c);
 
     return (0);
 }
@@ -440,6 +451,57 @@ lthread_cond_broadcast(struct lthread_cond *c)
         _lthread_desched_sleep(lt);
         TAILQ_INSERT_TAIL(&lthread_get_sched()->ready, lt, ready_next);
     }
+}
+
+static inline void lthread_mutex_init(struct lthread_mutex *m)
+{
+    lthread_cond_init(&m->c);
+}
+
+int lthread_mutex_create(struct lthread_mutex **m)
+{
+    if ((*m = lthr_calloc(1, sizeof(struct lthread_mutex))) == NULL)
+        return (-1);
+
+    lthread_mutex_init(*m);
+
+    return (0);
+}
+
+int lthread_mutex_check(struct lthread_mutex *m)
+{
+    return (!m->locked);
+}
+
+void lthread_mutex_lock(struct lthread_mutex *m)
+{
+    if(m->locked && m->lthread == lthread_id()) {
+        //locked by myself
+        ++m->locked;
+        return;
+    }
+
+    while(m->locked)
+    {
+        lthread_cond_wait(&m->c, 3000);
+    }
+    m->locked = 1;
+    m->lthread = lthread_id();
+}
+
+void lthread_mutex_unlock(struct lthread_mutex *m)
+{
+    if(!m->locked)
+    {
+        return;
+    }
+
+    if(m->lthread != lthread_id())
+    {
+        fprintf(stderr, "tried to unlock on %lu when thread was locked by %lu\n", lthread_id(), m->lthread);
+    }
+    --m->locked;
+    lthread_cond_broadcast(&m->c);
 }
 
 void
@@ -495,8 +557,12 @@ lthread_join(struct lthread *lt, void **ptr, uint64_t timeout)
     int ret = 0;
 
     /* fail if the lthread has exited already */
-    if (lt->state & BIT(LT_ST_EXITED))
+    if (lt->state & BIT(LT_ST_EXITED)) {
+        //exited but not free ?
+        //fprintf(stderr, "join on a exit lt\n");
+        _lthread_free(lt);
         return (-1);
+    }
 
     _lthread_sched_busy_sleep(current, timeout);
 
@@ -505,8 +571,9 @@ lthread_join(struct lthread *lt, void **ptr, uint64_t timeout)
         return (-2);
     }
 
-    if (lt->state & BIT(LT_ST_CANCELLED))
-        ret = -1;
+    if (lt->state & BIT(LT_ST_CANCELLED)) {
+        ret = -3;
+    }
 
     _lthread_free(lt);
 
@@ -556,3 +623,6 @@ lthread_print_timestamp(char *msg)
     gettimeofday(&t1, NULL);
 	printf("lt timestamp: sec: %ld usec: %ld (%s)\n", t1.tv_sec, (long) t1.tv_usec, msg);
 }
+
+#define LTHREAD_CHAN_INT
+#include "chan.c"
